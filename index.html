@@ -1,0 +1,2733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+  <!--
+    Prototype architecture notes:
+    - Single-file deliverable by design, but structured like a small product surface.
+    - All state changes flow through dispatch(), and render functions derive UI from state.
+    - CSP uses nonces instead of unsafe-inline. In production this should be delivered as an HTTP header.
+    - Dynamic text is rendered through textContent or sanitized before entering HTML templates.
+    - File attachment is simulated client-side. Real uploads would require authz checks, server-side MIME validation, malware scanning, audit logging, and signed object storage URLs.
+  -->
+  <!--
+    Static prototype note: nonce values are fixed because this is a single-file artifact.
+    Production should deliver CSP as an HTTP header and generate a fresh nonce per response.
+    Production should also enforce anti-framing with frame-ancestors (plus X-Frame-Options fallback where needed).
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; script-src 'nonce-ff-script-v1'; style-src 'self' 'nonce-ff-style-v1' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'none'; form-action 'none'"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>FutureFeed · Compliance Evidence Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" referrerpolicy="no-referrer"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin referrerpolicy="no-referrer"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" referrerpolicy="no-referrer"/>
+<style nonce="ff-style-v1">
+/* ─── Design tokens ─────────────────────────────────────────────────────── */
+:root {
+  /* Text */
+  --ink-1: #0c0f1a;
+  --ink-2: #3a3f55;
+  --ink-3: #6b7194;
+  --ink-4: #9499b5;
+  /* Surfaces */
+  --surface:   #ffffff;
+  --canvas:    #f5f6fb;
+  --canvas-2:  #ecedf6;
+  --rule:      #e4e6f0;
+  --rule-2:    #f0f2f8;
+  /* Brand */
+  --blue:       #2953e8;
+  --blue-soft:  #edf0fd;
+  --blue-glow:  rgba(41, 83, 232, 0.15);
+  /* Semantic */
+  --green:       #0f7a4b;
+  --green-soft:  #e6f4ee;
+  --amber:       #b05c04;
+  --amber-soft:  #fdf0e0;
+  --red:         #c0132c;
+  --red-soft:    #fce8eb;
+  --violet:      #6c2bd9;
+  --violet-soft: #f0eafd;
+  /* Layout */
+  --sidebar-w: 256px;
+  --detail-w:  400px;
+  /* Radii */
+  --r-sm: 10px;
+  --r:    14px;
+  --r-lg: 20px;
+  --r-xl: 26px;
+  /* Typography */
+  --mono: "DM Mono", ui-monospace, monospace;
+}
+
+/* ─── Reset ─────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: "DM Sans", ui-sans-serif, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink-1);
+  background: var(--canvas);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; border: none; background: none; }
+
+/* ─── Layout shell ──────────────────────────────────────────────────────── */
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  min-height: 100%;
+}
+
+/* ─── Sidebar ───────────────────────────────────────────────────────────── */
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-1);
+  color: #c8cbdb;
+  scrollbar-width: none;
+}
+.sidebar::-webkit-scrollbar { display: none; }
+
+.sb-top {
+  padding: 20px 18px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.sb-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.sb-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #4f7bff, #28d88f);
+  display: grid;
+  place-items: center;
+}
+.sb-name    { font-size: 14px; font-weight: 700; color: #fff; letter-spacing: -0.02em; }
+.sb-tagline { font-size: 11px; color: rgba(255,255,255,0.32); margin-top: 1px; }
+
+.sb-workspace {
+  padding: 10px 12px;
+  border-radius: var(--r);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.sb-ws-label  { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: rgba(255,255,255,0.28); margin-bottom: 4px; }
+.sb-ws-name   { font-size: 13px; font-weight: 600; color: #fff; }
+.sb-ws-detail { font-size: 11.5px; color: rgba(255,255,255,0.4); margin-top: 1px; }
+
+.sb-nav { padding: 10px 8px; }
+.sb-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: rgba(255,255,255,0.22);
+  padding: 12px 10px 5px;
+}
+.sb-nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  color: rgba(255,255,255,0.48);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  transition: background 0.13s, color 0.13s;
+}
+.sb-nav-item:hover           { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.8); }
+.sb-nav-item[aria-current]   { background: rgba(255,255,255,0.1); color: #fff; }
+.sb-nav-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: rgba(255,255,255,0.07);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+.sb-nav-item[aria-current] .sb-nav-icon { background: var(--blue); }
+.sb-badge {
+  margin-left: auto;
+  background: var(--red);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 99px;
+  padding: 2px 6px;
+  font-family: var(--mono);
+}
+
+.sb-footer { margin-top: auto; padding: 14px 10px; }
+.sb-deadline {
+  padding: 13px;
+  border-radius: var(--r);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.09);
+}
+.sb-deadline-row { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+.sb-deadline-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f97316;
+  flex-shrink: 0;
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1);   }
+  50%       { opacity: 0.5; transform: scale(1.4); }
+}
+.sb-deadline-label { font-size: 12.5px; font-weight: 600; color: #fff; }
+.sb-deadline-sub   { font-size: 11.5px; color: rgba(255,255,255,0.4); line-height: 1.45; margin-bottom: 10px; }
+.sb-deadline-btn {
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink-1);
+  font-size: 12.5px;
+  font-weight: 700;
+  transition: opacity 0.13s;
+}
+.sb-deadline-btn:hover { opacity: 0.88; }
+
+/* ─── Main ──────────────────────────────────────────────────────────────── */
+main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px 24px 48px;
+}
+
+/* ─── Topbar ─────────────────────────────────────────────────────────────  */
+.topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-3);
+  margin-bottom: 5px;
+}
+.breadcrumbs svg  { color: var(--ink-4); }
+.breadcrumbs span:last-child { color: var(--ink-2); }
+.page-title { font-size: 24px; font-weight: 700; letter-spacing: -0.04em; line-height: 1.1; }
+.page-subtitle { font-size: 13px; color: var(--ink-3); margin-top: 3px; }
+.topbar-actions { display: flex; gap: 7px; align-items: center; flex-shrink: 0; padding-top: 2px; }
+
+/* ─── Buttons ───────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 99px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.13s;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.btn-ghost   { background: var(--surface); border-color: var(--rule); color: var(--ink-2); }
+.btn-ghost:hover { border-color: var(--ink-3); color: var(--ink-1); }
+.btn-primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+.btn-primary:hover { background: #1e40c8; }
+.btn-sm  { padding: 5px 10px; font-size: 12px; border-radius: 7px; }
+.btn-lg  { padding: 9px 18px; font-size: 13.5px; border-radius: var(--r-sm); }
+.btn-unblock {
+  background: var(--violet-soft);
+  color: var(--violet);
+  border-color: transparent;
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 7px;
+}
+.btn-unblock:hover { background: #e4dafc; }
+
+/* ─── Banner ─────────────────────────────────────────────────────────────  */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 14px;
+  border-radius: var(--r);
+  animation: fade-down 0.25s ease;
+}
+@keyframes fade-down {
+  from { opacity: 0; transform: translateY(-5px); }
+  to   { opacity: 1; transform: none; }
+}
+.banner-warn    { background: #fff8ed; border: 1px solid #fcd9a0; }
+.banner-success { background: #f0fdf6; border: 1px solid #86efac; }
+.banner-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  font-size: 15px;
+}
+.banner-warn    .banner-icon { background: #fff0d0; }
+.banner-success .banner-icon { background: #dcfce7; }
+.banner-body { flex: 1; min-width: 0; }
+.banner-title  { font-size: 13px; font-weight: 600; }
+.banner-detail { font-size: 12px; margin-top: 1px; }
+.banner-warn    .banner-title,
+.banner-warn    .banner-detail  { color: #7c3c00; }
+.banner-success .banner-title,
+.banner-success .banner-detail  { color: #14532d; }
+.banner .btn { flex-shrink: 0; }
+
+
+/* ─── KPI row ───────────────────────────────────────────────────────────── */
+.kpi-row {
+  display: grid;
+  grid-template-columns: 300px repeat(3, 1fr);
+  gap: 12px;
+}
+.kpi-hero {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-xl);
+  padding: 20px;
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+}
+.kpi-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at top right, rgba(41,83,232,0.055), transparent 65%);
+}
+
+/* Progress ring */
+.ring-wrap { position: relative; flex-shrink: 0; width: 108px; height: 108px; }
+.ring-svg  { display: block; }
+.ring-bg   { fill: none; stroke: var(--rule-2); stroke-width: 9; stroke-linecap: round; }
+.ring-fg   {
+  fill: none;
+  stroke: var(--blue);
+  stroke-width: 9;
+  stroke-linecap: round;
+  stroke-dasharray: 0 999;
+  transition: stroke-dasharray 1s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.ring-center { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
+.ring-pct   { font-size: 23px; font-weight: 700; letter-spacing: -0.04em; font-family: var(--mono); }
+.ring-label { font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); margin-top: 1px; }
+
+.kpi-hero-body  { flex: 1; min-width: 0; }
+.kpi-hero-title { font-size: 14px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 3px; }
+.kpi-hero-sub   { font-size: 12px; color: var(--ink-3); line-height: 1.45; margin-bottom: 12px; }
+.kpi-hero-minis { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.kpi-mini {
+  padding: 8px 9px;
+  background: var(--canvas);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+}
+.kpi-mini-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-3); }
+.kpi-mini-value { font-size: 13px; font-weight: 700; margin-top: 2px; font-family: var(--mono); }
+
+.kpi-card {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-xl);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.kpi-label { font-size: 11.5px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.07em; }
+.kpi-value { font-size: 34px; font-weight: 700; letter-spacing: -0.055em; font-family: var(--mono); margin: 5px 0 2px; }
+.kpi-note  { font-size: 12px; color: var(--ink-3); }
+.kpi-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--mono);
+  margin-top: 9px;
+  width: fit-content;
+}
+.tag-green  { background: var(--green-soft);  color: var(--green);  }
+.tag-red    { background: var(--red-soft);    color: var(--red);    }
+.tag-amber  { background: var(--amber-soft);  color: var(--amber);  }
+
+/* ─── Framework coverage strip ──────────────────────────────────────────── */
+.fw-strip {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-xl);
+  padding: 18px 20px;
+  display: grid;
+  grid-template-columns: 1fr repeat(3, minmax(120px, 1fr));
+  gap: 20px;
+  align-items: center;
+}
+.fw-heading { font-size: 13px; font-weight: 700; letter-spacing: -0.02em; }
+.fw-subhead { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
+.fw-bar-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 5px;
+}
+.fw-bar-name { font-size: 12px; font-weight: 600; }
+.fw-bar-pct  { font-size: 11.5px; font-family: var(--mono); color: var(--ink-3); }
+.fw-track { height: 5px; background: var(--canvas-2); border-radius: 99px; overflow: hidden; }
+.fw-fill  {
+  height: 100%;
+  border-radius: 99px;
+  width: 0;
+  transition: width 0.9s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.fw-fill-blue   { background: var(--blue); }
+.fw-fill-violet { background: var(--violet); }
+.fw-fill-green  { background: var(--green); }
+
+/* ─── Content row ───────────────────────────────────────────────────────── */
+.content-row {
+  display: grid;
+  grid-template-columns: 1fr var(--detail-w);
+  gap: 12px;
+  align-items: start;
+}
+
+/* ─── Panel (requirements list) ─────────────────────────────────────────── */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-xl);
+  overflow: hidden;
+}
+.panel-header {
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.panel-title  { font-size: 14px; font-weight: 700; letter-spacing: -0.02em; }
+.panel-subtitle { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+
+.toolbar {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 7px;
+  padding: 10px 12px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--rule);
+}
+.search-wrap { position: relative; }
+.search-wrap svg {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ink-4);
+  pointer-events: none;
+}
+.search-input {
+  width: 100%;
+  padding: 7px 10px 7px 30px;
+  border: 1px solid var(--rule);
+  border-radius: 99px;
+  background: var(--surface);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.13s;
+}
+.search-input:focus { border-color: var(--blue); }
+.select-control {
+  padding: 7px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 99px;
+  background: var(--surface);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  outline: none;
+  cursor: pointer;
+}
+
+.filter-chips {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.filter-chip {
+  padding: 4px 10px;
+  border-radius: 99px;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-3);
+  transition: all 0.12s;
+}
+.filter-chip:hover              { border-color: var(--ink-3); color: var(--ink-1); }
+.filter-chip[aria-pressed="true"] {
+  background: var(--ink-1);
+  border-color: var(--ink-1);
+  color: #fff;
+}
+.chip-count { font-family: var(--mono); font-size: 10px; opacity: 0.55; margin-left: 3px; }
+
+/* ─── Requirement rows ──────────────────────────────────────────────────── */
+.req-list { display: grid; }
+
+.req-row {
+  display: grid;
+  grid-template-columns: 38px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--rule-2);
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background 0.11s;
+  position: relative;
+}
+.req-row:last-child       { border-bottom: none; }
+.req-row:hover            { background: #fafbff; }
+.req-row[aria-selected="true"] { background: var(--blue-soft); }
+.req-row[aria-selected="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--blue);
+  border-radius: 0 2px 2px 0;
+}
+
+/* Drop target state — row accepts dragged files */
+.req-row.drop-target {
+  background: #eff6ff;
+  box-shadow: inset 0 0 0 2px rgba(41, 83, 232, 0.3);
+}
+.req-row.drop-target::after {
+  content: "Drop to attach";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--blue);
+  background: rgba(237, 240, 253, 0.92);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.status-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.status-icon-approved { background: var(--green-soft); }
+.status-icon-missing  { background: var(--red-soft);   }
+.status-icon-review   { background: var(--amber-soft); }
+.status-icon-partial  { background: var(--blue-soft);  }
+.status-icon-blocked  { background: var(--violet-soft);}
+
+.req-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; margin-bottom: 3px; }
+.req-meta  { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.req-meta-tag { font-size: 11px; font-weight: 600; color: var(--ink-3); font-family: var(--mono); }
+.req-meta-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--rule); flex-shrink: 0; }
+
+.req-right  { text-align: right; min-width: 86px; flex-shrink: 0; }
+.req-due    { font-size: 11px; color: var(--ink-4); font-family: var(--mono); margin-top: 3px; }
+.req-due-urgent { color: var(--red); font-weight: 600; }
+
+/* ─── Status pills ──────────────────────────────────────────────────────── */
+.status-pill { display: inline-flex; align-items: center; padding: 3px 7px; border-radius: 99px; font-size: 11px; font-weight: 700; }
+.pill-approved { background: var(--green-soft);  color: var(--green);  }
+.pill-missing  { background: var(--red-soft);    color: var(--red);    }
+.pill-review   { background: var(--amber-soft);  color: var(--amber);  }
+.pill-partial  { background: var(--blue-soft);   color: var(--blue);   }
+.pill-blocked  { background: var(--violet-soft); color: var(--violet); }
+
+.req-list-empty {
+  padding: 36px 20px;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.req-list-empty strong { display: block; color: var(--ink-2); margin-bottom: 3px; }
+
+/* ─── Detail pane ───────────────────────────────────────────────────────── */
+.detail-pane {
+  position: sticky;
+  top: 24px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-xl);
+  overflow: hidden;
+}
+.detail-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--rule); }
+.detail-eyebrow {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--blue);
+  font-family: var(--mono);
+  margin-bottom: 4px;
+}
+.detail-title   { font-size: 15px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.2; margin-bottom: 9px; }
+.detail-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+.detail-scroll {
+  max-height: calc(100vh - 260px);
+  overflow-y: auto;
+}
+.detail-scroll::-webkit-scrollbar       { width: 4px; }
+.detail-scroll::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 2px; }
+
+.detail-section { padding: 14px 16px; border-bottom: 1px solid var(--rule-2); }
+.detail-section:last-child { border-bottom: none; }
+.detail-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+.detail-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.detail-count {
+  font-size: 10.5px;
+  font-weight: 700;
+  font-family: var(--mono);
+  background: var(--canvas-2);
+  color: var(--ink-3);
+  border-radius: 99px;
+  padding: 2px 6px;
+}
+
+.detail-description { font-size: 13px; color: var(--ink-2); line-height: 1.6; }
+
+.detail-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.detail-stat  { background: var(--canvas); border: 1px solid var(--rule); border-radius: var(--r-sm); padding: 9px 10px; }
+.detail-stat-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-3); }
+.detail-stat-value { font-size: 13px; font-weight: 700; margin-top: 3px; }
+
+/* Reviewer note */
+.reviewer-note {
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  background: #fff8ed;
+  border: 1px solid #fcd9a0;
+}
+.reviewer-note-header { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+.reviewer-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #60a5fa, #a78bfa);
+  display: grid;
+  place-items: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+}
+.reviewer-label { font-size: 11.5px; font-weight: 700; color: #7c3c00; }
+.reviewer-body  { font-size: 12px; color: #a05c00; line-height: 1.5; }
+
+/* Blocked card */
+.blocked-card {
+  padding: 12px;
+  border-radius: var(--r-sm);
+  background: var(--violet-soft);
+  border: 1px solid #d4bbfa;
+}
+.blocked-card-header { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 8px; }
+.blocked-icon { width: 28px; height: 28px; border-radius: 7px; background: #ddd6fe; display: grid; place-items: center; font-size: 13px; flex-shrink: 0; }
+.blocked-title  { font-size: 12.5px; font-weight: 700; color: var(--violet); }
+.blocked-reason { font-size: 12px; color: #5b21b6; line-height: 1.45; margin-bottom: 10px; }
+
+/* Contextual start-here prompt */
+.start-here-prompt {
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: #fff8ed;
+  border: 1px solid #fcd9a0;
+  font-size: 12px;
+  color: #a05c00;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+.start-here-prompt strong { color: #7c3c00; display: block; margin-bottom: 2px; }
+
+/* Checklist */
+.checklist       { display: grid; gap: 6px; }
+.checklist-item  { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
+.checklist-check {
+  width: 17px; height: 17px;
+  border-radius: 5px;
+  background: var(--green-soft);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* Evidence list */
+.evidence-list { display: grid; gap: 6px; }
+.evidence-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--canvas);
+}
+.evidence-icon { width: 28px; height: 28px; border-radius: 7px; background: var(--blue-soft); display: grid; place-items: center; flex-shrink: 0; font-size: 13px; }
+.evidence-name { font-size: 12.5px; font-weight: 600; margin-bottom: 1px; }
+.evidence-meta { font-size: 11px; color: var(--ink-3); font-family: var(--mono); }
+.evidence-remove {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--red);
+  background: var(--red-soft);
+  padding: 3px 7px;
+  border-radius: 6px;
+  transition: opacity 0.12s;
+}
+.evidence-remove:hover { opacity: 0.7; }
+.evidence-empty { color: var(--ink-3); }
+.evidence-empty .evidence-name { color: var(--ink-2); }
+
+/* Drop zone */
+.drop-zone {
+  border: 1.5px dashed #bfdbfe;
+  border-radius: var(--r);
+  background: #f0f5ff;
+  padding: 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.drop-zone:hover,
+.drop-zone.drag-active { background: #dbeafe; border-color: #60a5fa; }
+.drop-zone input       { display: none; }
+.drop-zone label       { display: block; cursor: pointer; }
+.drop-zone-icon  { font-size: 20px; margin-bottom: 4px; }
+.drop-zone-title { font-size: 12.5px; font-weight: 700; color: var(--blue); margin-bottom: 2px; }
+.drop-zone-hint  { font-size: 11px; color: #3b82f6; }
+
+/* ─── Drawer ─────────────────────────────────────────────────────────────  */
+.drawer-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(12, 15, 26, 0.38);
+  backdrop-filter: blur(3px);
+}
+.drawer-backdrop.open { display: block; }
+
+.drawer {
+  position: fixed;
+  right: 0; top: 0;
+  z-index: 41;
+  width: min(500px, 95vw);
+  height: 100vh;
+  background: var(--surface);
+  box-shadow: -20px 0 70px rgba(12, 15, 26, 0.16);
+  transform: translateX(110%);
+  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.drawer.open { transform: translateX(0); }
+
+.drawer-header {
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-shrink: 0;
+}
+.drawer-eyebrow {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--blue);
+  font-family: var(--mono);
+  margin-bottom: 4px;
+}
+.drawer-title { font-size: 20px; font-weight: 700; letter-spacing: -0.04em; line-height: 1.1; }
+.drawer-close {
+  width: 34px; height: 34px;
+  border-radius: 99px;
+  flex-shrink: 0;
+  background: var(--canvas);
+  border: 1px solid var(--rule);
+  font-size: 17px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+  transition: all 0.12s;
+}
+.drawer-close:hover { background: var(--rule); color: var(--ink-1); }
+.drawer-body   { padding: 18px 22px; flex: 1; overflow-y: auto; }
+.drawer-footer { padding: 14px 22px; border-top: 1px solid var(--rule); display: flex; gap: 8px; justify-content: flex-end; flex-shrink: 0; }
+
+/* Form fields */
+.field          { margin-bottom: 13px; }
+.field label    { display: block; font-size: 12px; font-weight: 700; margin-bottom: 5px; color: var(--ink-2); }
+.field-required { color: var(--red); }
+.field-input, .field-select, .field-textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: 13.5px;
+  outline: none;
+  transition: border-color 0.13s, box-shadow 0.13s;
+}
+.field-input:focus,
+.field-select:focus,
+.field-textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-glow); }
+.field-textarea { min-height: 90px; resize: vertical; }
+.field-row      { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.field-error    { font-size: 11.5px; color: var(--red); margin-top: 4px; display: none; }
+.field-error.visible { display: block; }
+
+/* ─── Completion modal ──────────────────────────────────────────────────── */
+.modal-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  align-items: center;
+  justify-content: center;
+  background: rgba(12, 15, 26, 0.5);
+  backdrop-filter: blur(4px);
+}
+.modal-backdrop.open { display: flex; }
+.modal {
+  background: var(--surface);
+  border-radius: var(--r-xl);
+  width: min(520px, 92vw);
+  overflow: hidden;
+  box-shadow: 0 40px 100px rgba(12, 15, 26, 0.28);
+  transform: translateY(16px) scale(0.97);
+  opacity: 0;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.22s ease;
+}
+.modal-backdrop.open .modal { transform: translateY(0) scale(1); opacity: 1; }
+
+.modal-hero {
+  padding: 36px 36px 24px;
+  text-align: center;
+  background: linear-gradient(160deg, #f0fdf6, #e8f4fd);
+  border-bottom: 1px solid var(--rule);
+  position: relative;
+  overflow: hidden;
+}
+.modal-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 25% 60%, rgba(15,122,75,0.07), transparent 50%),
+    radial-gradient(circle at 75% 30%, rgba(41,83,232,0.06), transparent 50%);
+}
+.modal-check-ring {
+  width: 72px; height: 72px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  display: grid;
+  place-items: center;
+  margin: 0 auto 18px;
+  box-shadow: 0 0 0 10px rgba(34,197,94,0.1), 0 10px 28px rgba(22,163,74,0.24);
+  animation: modal-pop 0.46s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes modal-pop {
+  from { transform: scale(0.3); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+.modal-title { font-size: 22px; font-weight: 700; letter-spacing: -0.04em; margin-bottom: 7px; }
+.modal-subtitle { font-size: 13.5px; color: var(--ink-3); line-height: 1.55; max-width: 360px; margin: 0 auto; }
+
+.modal-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+.modal-stat        { padding: 14px; text-align: center; background: var(--surface); }
+.modal-stat-value  { font-size: 24px; font-weight: 700; letter-spacing: -0.04em; font-family: var(--mono); }
+.modal-stat-label  { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-3); margin-top: 2px; }
+
+.modal-body        { padding: 22px 24px 24px; }
+.modal-next-label  { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink-3); margin-bottom: 9px; }
+.modal-steps       { display: grid; gap: 7px; margin-bottom: 18px; }
+.modal-step        { display: flex; align-items: center; gap: 9px; padding: 9px 11px; border: 1px solid var(--rule); border-radius: var(--r-sm); font-size: 13px; color: var(--ink-2); }
+.modal-step-number {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: var(--canvas-2);
+  display: grid;
+  place-items: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  font-family: var(--mono);
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+.modal-actions     { display: flex; gap: 9px; }
+.modal-actions .btn { flex: 1; justify-content: center; border-radius: var(--r-sm); padding: 10px; }
+
+/* ─── Confetti ───────────────────────────────────────────────────────────  */
+#confetti-canvas { position: fixed; inset: 0; z-index: 59; pointer-events: none; }
+
+/* ─── Toast ──────────────────────────────────────────────────────────────  */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  z-index: 99;
+  transform: translate(-50%, 80px);
+  background: var(--ink-1);
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 99px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 10px 36px rgba(12, 15, 26, 0.22);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.toast.visible { transform: translate(-50%, 0); }
+
+/* ─── Responsive ─────────────────────────────────────────────────────────  */
+@media (max-width: 1280px) {
+  .kpi-row { grid-template-columns: 260px repeat(3, 1fr); }
+  :root    { --detail-w: 360px; }
+}
+@media (max-width: 1100px) {
+  .kpi-row, .content-row, .fw-strip { grid-template-columns: 1fr; }
+  .detail-pane { position: static; }
+}
+@media (max-width: 740px) {
+  .shell          { grid-template-columns: 1fr; }
+  .sidebar        { display: none; }
+  main            { padding: 14px; gap: 14px; }
+  .topbar         { flex-direction: column; }
+  .topbar-actions { width: 100%; flex-wrap: wrap; }
+  .kpi-hero       { flex-direction: column; align-items: flex-start; }
+}
+</style>
+</head>
+<body>
+
+<canvas id="confetti-canvas"></canvas>
+
+<div class="shell">
+
+  <!-- ── Sidebar ──────────────────────────────────────────────────────── -->
+  <aside class="sidebar" aria-label="Main navigation">
+    <div class="sb-top">
+      <div class="sb-brand">
+        <div class="sb-logo" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M3.5 9.5L7.5 13.5L14.5 6.5" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div>
+          <div class="sb-name">FutureFeed</div>
+          <div class="sb-tagline">Evidence Operations</div>
+        </div>
+      </div>
+      <div class="sb-workspace">
+        <div class="sb-ws-label">Active workspace</div>
+        <div class="sb-ws-name">Northstar Builders LLC</div>
+        <div class="sb-ws-detail">SOC 2 Type II · Readiness packet</div>
+      </div>
+    </div>
+    <nav class="sb-nav" aria-label="Sidebar navigation">
+      <div class="sb-section-label">Operate</div>
+      <button class="sb-nav-item" aria-current="page">
+        <span class="sb-nav-icon" aria-hidden="true">📊</span>
+        Dashboard
+        <span class="sb-badge" id="js-sb-badge" aria-label="open items">6</span>
+      </button>
+      <button class="sb-nav-item"><span class="sb-nav-icon" aria-hidden="true">📁</span>Evidence Library</button>
+      <button class="sb-nav-item"><span class="sb-nav-icon" aria-hidden="true">🧾</span>Requirements</button>
+      <button class="sb-nav-item"><span class="sb-nav-icon" aria-hidden="true">💬</span>Reviewer Comments</button>
+      <div class="sb-section-label">Frameworks</div>
+      <button class="sb-nav-item"><span class="sb-nav-icon" aria-hidden="true">🛡️</span>SOC 2</button>
+      <button class="sb-nav-item"><span class="sb-nav-icon" aria-hidden="true">🔐</span>ISO 27001</button>
+      <button class="sb-nav-item"><span class="sb-nav-icon" aria-hidden="true">🏥</span>HIPAA</button>
+    </nav>
+    <div class="sb-footer">
+      <div class="sb-deadline">
+        <div class="sb-deadline-row">
+          <div class="sb-deadline-dot" aria-hidden="true"></div>
+          <div class="sb-deadline-label">Packet due Jun 14</div>
+        </div>
+        <div class="sb-deadline-sub" id="js-sb-copy">6 requirements still need evidence.</div>
+        <button class="sb-deadline-btn" id="js-sb-attach">Attach evidence →</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main ─────────────────────────────────────────────────────────── -->
+  <main>
+
+    <!-- Topbar -->
+    <header class="topbar">
+      <div>
+        <nav class="breadcrumbs" aria-label="Breadcrumb">
+          <span>Compliance</span>
+          <svg width="9" height="9" viewBox="0 0 9 9" fill="none" aria-hidden="true">
+            <path d="M3 1.5L6 4.5L3 7.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Evidence Dashboard</span>
+        </nav>
+        <h1 class="page-title">Evidence Dashboard</h1>
+        <p class="page-subtitle">Track progress, resolve gaps, and attach documentation to requirements.</p>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost" id="js-simulate">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.3"/>
+            <path d="M6.5 3.5v3.2l1.8 1.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+          </svg>
+          Simulate reviewer
+        </button>
+        <button class="btn btn-ghost" id="js-export">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+            <path d="M1.5 9.5v2h10v-2M6.5 1.5v7M4 6l2.5 2.5L9 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Export packet
+        </button>
+        <button class="btn btn-primary" id="js-add-evidence">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+            <path d="M6.5 1.5v10M1.5 6.5h10" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          Add evidence
+        </button>
+      </div>
+    </header>
+
+    <!-- Banner (dynamic) -->
+    <div id="js-banner" role="status" aria-live="polite"></div>
+
+    <!-- KPI row -->
+    <section class="kpi-row" aria-label="Compliance summary">
+      <div class="kpi-hero">
+        <div class="ring-wrap" role="img" aria-labelledby="js-ring-pct">
+          <svg class="ring-svg" width="108" height="108" viewBox="0 0 108 108">
+            <circle class="ring-bg" cx="54" cy="54" r="42"/>
+            <circle class="ring-fg" id="js-ring-fg" cx="54" cy="54" r="42" transform="rotate(-90 54 54)"/>
+          </svg>
+          <div class="ring-center">
+            <div>
+              <div class="ring-pct" id="js-ring-pct">—</div>
+              <div class="ring-label">Ready</div>
+            </div>
+          </div>
+        </div>
+        <div class="kpi-hero-body">
+          <div class="kpi-hero-title" id="js-hero-title">—</div>
+          <div class="kpi-hero-sub">Packet progressing — missing and partial evidence still creates reviewer risk.</div>
+          <div class="kpi-hero-minis">
+            <div class="kpi-mini"><div class="kpi-mini-label">Next due</div><div class="kpi-mini-value">Jun 5</div></div>
+            <div class="kpi-mini"><div class="kpi-mini-label">Risk level</div><div class="kpi-mini-value" id="js-risk-level">—</div></div>
+          </div>
+        </div>
+      </div>
+      <article class="kpi-card">
+        <div><div class="kpi-label">Approved</div><div class="kpi-value" id="js-kpi-approved">—</div><div class="kpi-note">Accepted by reviewer</div></div>
+        <span class="kpi-tag tag-green">↑ +4 this week</span>
+      </article>
+      <article class="kpi-card">
+        <div><div class="kpi-label">Needs evidence</div><div class="kpi-value" id="js-kpi-missing">—</div><div class="kpi-note">Blocking readiness</div></div>
+        <span class="kpi-tag tag-red">Action needed</span>
+      </article>
+      <article class="kpi-card">
+        <div><div class="kpi-label">In review</div><div class="kpi-value" id="js-kpi-review">—</div><div class="kpi-note">Awaiting validation</div></div>
+        <span class="kpi-tag tag-amber">2 due soon</span>
+      </article>
+    </section>
+
+    <!-- Framework coverage -->
+    <div class="fw-strip" aria-label="Framework coverage">
+      <div><div class="fw-heading">Coverage by framework</div><div class="fw-subhead">Evidence completion across active programs</div></div>
+      <div>
+        <div class="fw-bar-head"><span class="fw-bar-name">SOC 2 Type II</span><span class="fw-bar-pct" id="js-fw-soc2-pct">0%</span></div>
+        <div class="fw-track"><div class="fw-fill fw-fill-blue"  id="js-fw-soc2-bar"></div></div>
+      </div>
+      <div>
+        <div class="fw-bar-head"><span class="fw-bar-name">ISO 27001</span><span class="fw-bar-pct" id="js-fw-iso-pct">0%</span></div>
+        <div class="fw-track"><div class="fw-fill fw-fill-violet" id="js-fw-iso-bar"></div></div>
+      </div>
+      <div>
+        <div class="fw-bar-head"><span class="fw-bar-name">HIPAA</span><span class="fw-bar-pct" id="js-fw-hip-pct">0%</span></div>
+        <div class="fw-track"><div class="fw-fill fw-fill-green"  id="js-fw-hip-bar"></div></div>
+      </div>
+    </div>
+
+    <!-- Content row -->
+    <div class="content-row">
+
+      <!-- Requirements panel -->
+      <div class="panel" role="region" aria-label="Requirements">
+        <div class="panel-header">
+          <div>
+            <div class="panel-title">Requirements</div>
+            <div class="panel-subtitle">Select to view detail · Drop a file onto any row to attach evidence instantly</div>
+          </div>
+        </div>
+        <div class="toolbar">
+          <div class="search-wrap">
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.4"/>
+              <path d="M10 10L13 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+            <input class="search-input" id="js-search" type="search" placeholder="Search requirements, owners, evidence…" aria-label="Search requirements"/>
+          </div>
+          <select class="select-control" id="js-owner-select" aria-label="Filter by owner">
+            <option value="all">All owners</option>
+          </select>
+          <select class="select-control" id="js-sort-select" aria-label="Sort requirements">
+            <option value="risk">By risk</option>
+            <option value="due">By due date</option>
+            <option value="status">By status</option>
+          </select>
+        </div>
+        <div class="filter-chips" id="js-filter-chips" role="group" aria-label="Filter by status">
+          <button class="filter-chip" data-filter="all"      aria-pressed="true">All<span class="chip-count" id="js-chip-count"></span></button>
+          <button class="filter-chip" data-filter="missing"  aria-pressed="false">Needs evidence</button>
+          <button class="filter-chip" data-filter="partial"  aria-pressed="false">Partial</button>
+          <button class="filter-chip" data-filter="review"   aria-pressed="false">In review</button>
+          <button class="filter-chip" data-filter="approved" aria-pressed="false">Approved</button>
+          <button class="filter-chip" data-filter="blocked"  aria-pressed="false">Blocked</button>
+        </div>
+        <div class="req-list" id="js-req-list" role="listbox" aria-label="Compliance requirements"></div>
+      </div>
+
+      <!-- Detail pane -->
+      <aside class="detail-pane" id="js-detail-pane" aria-live="polite" aria-label="Requirement detail"></aside>
+
+    </div>
+  </main>
+</div>
+
+<!-- Drawer backdrop -->
+<div class="drawer-backdrop" id="js-drawer-backdrop" aria-hidden="true"></div>
+
+<!-- Evidence drawer -->
+<aside class="drawer" id="js-drawer" aria-hidden="true" aria-labelledby="js-drawer-title" role="dialog" aria-modal="true" tabindex="-1">
+  <div class="drawer-header">
+    <div>
+      <div class="drawer-eyebrow">Attach evidence</div>
+      <h2 class="drawer-title" id="js-drawer-title">Upload documentation</h2>
+    </div>
+    <button class="drawer-close" id="js-drawer-close" aria-label="Close drawer">×</button>
+  </div>
+  <div class="drawer-body">
+    <div class="field">
+      <label for="js-dr-req">Requirement</label>
+      <select class="field-select" id="js-dr-req"></select>
+    </div>
+    <div class="field">
+      <label for="js-dr-name">Evidence title <span class="field-required" aria-hidden="true">*</span></label>
+      <input class="field-input" id="js-dr-name" type="text" placeholder="e.g. Q2 2025 Security Awareness — Contractor Completion Export" aria-required="true"/>
+      <div class="field-error" id="js-dr-name-error" role="alert">Please enter a title (minimum 4 characters).</div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="js-dr-type">Type</label>
+        <select class="field-select" id="js-dr-type">
+          <option>Policy</option><option>Procedure</option><option>Screenshot</option>
+          <option>Export / Report</option><option>Attestation</option>
+          <option>Audit log</option><option>Certificate</option><option>Contract</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="js-dr-class">Classification</label>
+        <select class="field-select" id="js-dr-class">
+          <option>Internal</option><option>Confidential</option><option>Restricted</option><option>Public</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label for="js-dr-notes">Notes for reviewer</label>
+      <textarea class="field-textarea" id="js-dr-notes" placeholder="Describe what this evidence demonstrates and why it satisfies the requirement…"></textarea>
+    </div>
+    <div class="drop-zone" id="js-drawer-dz">
+      <input id="js-drawer-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.docx,.csv,.xlsx" aria-label="Upload file"/>
+      <label for="js-drawer-file">
+        <div class="drop-zone-icon" aria-hidden="true">⬆</div>
+        <div class="drop-zone-title">Click or drag to attach a file</div>
+        <div class="drop-zone-hint">PDF, PNG, DOCX, CSV — up to 25 MB</div>
+      </label>
+    </div>
+  </div>
+  <div class="drawer-footer">
+    <button class="btn btn-ghost btn-lg" id="js-drawer-cancel">Cancel</button>
+    <button class="btn btn-primary btn-lg" id="js-drawer-submit">Attach evidence</button>
+  </div>
+</aside>
+
+<!-- Completion modal -->
+<div class="modal-backdrop" id="js-modal-backdrop" aria-hidden="true">
+  <div class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="js-modal-title">
+    <div class="modal-hero">
+      <div class="modal-check-ring" aria-hidden="true">
+        <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+          <path d="M7 16.5L13 22.5L25 10.5" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="modal-title" id="js-modal-title">Packet is ready for review</div>
+      <p class="modal-subtitle">All requirements have evidence attached. FutureFeed can now submit the readiness packet to your reviewer.</p>
+    </div>
+    <div class="modal-stats">
+      <div class="modal-stat"><div class="modal-stat-value" id="js-modal-reqs">—</div><div class="modal-stat-label">Requirements</div></div>
+      <div class="modal-stat"><div class="modal-stat-value" id="js-modal-files">—</div><div class="modal-stat-label">Files attached</div></div>
+      <div class="modal-stat"><div class="modal-stat-value">12</div><div class="modal-stat-label">Days ahead</div></div>
+    </div>
+    <div class="modal-body">
+      <div class="modal-next-label">What happens next</div>
+      <div class="modal-steps">
+        <div class="modal-step"><div class="modal-step-number">1</div>FutureFeed compiles evidence into a reviewer packet</div>
+        <div class="modal-step"><div class="modal-step-number">2</div>Your assigned reviewer validates each requirement</div>
+        <div class="modal-step"><div class="modal-step-number">3</div>Reviewer comments appear here for you to action</div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="js-modal-dismiss">Back to dashboard</button>
+        <button class="btn btn-primary" id="js-modal-submit">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+            <path d="M1.5 9.5v2h10v-2M6.5 1.5v7M4 6l2.5 2.5L9 6" stroke="#fff" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Submit to reviewer
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="js-toast" role="status" aria-live="polite">
+  <span id="js-toast-icon" aria-hidden="true">✓</span>
+  <span id="js-toast-msg">Done</span>
+</div>
+
+<script nonce="ff-script-v1">
+'use strict';
+
+// ─── Security: HTML sanitizer ─────────────────────────────────────────────────
+// Escapes all characters that have special meaning in HTML context.
+// Must be applied to every external/user-controlled string before
+// interpolation into innerHTML. Numbers and booleans are safe without it.
+// CSS class names drawn from closed constants (STATUS_CONFIG) are safe without it.
+/** @param {unknown} value @returns {string} */
+function sanitize(value) {
+  return String(value ?? '')
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&#x27;');
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const RING_CIRCUMFERENCE = 2 * Math.PI * 42; // r = 42
+const MAX_EVIDENCE_FILE_BYTES = 25 * 1024 * 1024;
+const ALLOWED_EVIDENCE_EXTENSIONS = new Set(['pdf', 'png', 'jpg', 'jpeg', 'docx', 'csv', 'xlsx']);
+const ALLOWED_EVIDENCE_MIME_TYPES = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/csv',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]);
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+/** Status display config — single source of truth for labels, icons, CSS classes. */
+const STATUS_CONFIG = Object.freeze({
+  approved: { label: 'Approved',      icon: '✓', pillClass: 'pill-approved', iconClass: 'status-icon-approved' },
+  missing:  { label: 'Needs evidence',icon: '!', pillClass: 'pill-missing',  iconClass: 'status-icon-missing'  },
+  review:   { label: 'In review',     icon: '↻', pillClass: 'pill-review',   iconClass: 'status-icon-review'   },
+  partial:  { label: 'Partial',       icon: '◑', pillClass: 'pill-partial',  iconClass: 'status-icon-partial'  },
+  blocked:  { label: 'Blocked',       icon: '✕', pillClass: 'pill-blocked',  iconClass: 'status-icon-blocked'  },
+});
+
+/** Statuses that block packet readiness. */
+const BLOCKING_STATUSES = new Set(['missing', 'partial', 'blocked']);
+
+/** Statuses that transition to "review" when evidence is added. */
+const ATTACHABLE_STATUSES = new Set(['missing', 'partial', 'blocked']);
+
+// ─── Data ─────────────────────────────────────────────────────────────────────
+
+/**
+ * @typedef {Object} Evidence
+ * @property {string} name
+ * @property {string} type
+ * @property {string} classification
+ * @property {string} date
+ */
+
+/**
+ * @typedef {Object} Requirement
+ * @property {string}     id
+ * @property {string}     framework
+ * @property {string}     control
+ * @property {string}     title
+ * @property {string}     description
+ * @property {string}     owner
+ * @property {string}     dueLabel
+ * @property {boolean}    dueUrgent
+ * @property {number}     riskScore      0-100
+ * @property {string}     priority
+ * @property {string}     status         keyof STATUS_CONFIG
+ * @property {string}     reviewerComment
+ * @property {string[]}   guidance
+ * @property {Evidence[]} evidence
+ */
+
+/** @type {Requirement[]} */
+const REQUIREMENTS = [
+  {
+    id: 'r1', framework: 'SOC 2', control: 'CC6.1',
+    title: 'Access control policy',
+    description: 'Demonstrate that a formal access control policy exists, is approved by management, and communicated to all relevant personnel within the last 12 months.',
+    owner: 'Security', dueLabel: 'Jun 5', dueUrgent: true, riskScore: 94, priority: 'Critical',
+    status: 'missing', reviewerComment: '',
+    guidance: ['Policy must reference least-privilege principle', 'Requires CISO or equivalent signature', 'Distribution evidence (email/Slack export) required'],
+    evidence: [],
+  },
+  {
+    id: 'r2', framework: 'SOC 2', control: 'CC9.2',
+    title: 'Vendor risk assessment',
+    description: 'Provide evidence that all third-party vendors with access to customer data have been assessed for security risk and approved prior to onboarding.',
+    owner: 'Procurement', dueLabel: 'Jun 7', dueUrgent: true, riskScore: 88, priority: 'Critical',
+    status: 'missing', reviewerComment: '',
+    guidance: ['Must cover all vendors from prior 12 months', 'Risk rating matrix required', 'Approved by legal or information security'],
+    evidence: [],
+  },
+  {
+    id: 'r3', framework: 'SOC 2', control: 'CC1.4',
+    title: 'Security awareness training',
+    description: 'Confirm all employees and contractors completed annual security awareness training, with completion records retained.',
+    owner: 'HR', dueLabel: 'Jun 5', dueUrgent: true, riskScore: 82, priority: 'High',
+    status: 'partial',
+    reviewerComment: 'Reviewer requested clearer scope. Please add evidence showing active contractor users only.',
+    guidance: ['Completion report must show 100% of active users', 'Training content must include phishing section', 'Date of completion must be within 12 months'],
+    evidence: [{ name: 'Employee training completion report.csv', type: 'Export', classification: 'Internal', date: 'May 28' }],
+  },
+  {
+    id: 'r4', framework: 'SOC 2', control: 'CC6.7',
+    title: 'Encryption at rest',
+    description: 'Evidence that all data stores containing customer PII are encrypted at rest using AES-256 or equivalent.',
+    owner: 'Engineering', dueLabel: 'Jun 10', dueUrgent: false, riskScore: 76, priority: 'High',
+    status: 'review', reviewerComment: 'Under review — initial evidence looks adequate.',
+    guidance: ['Infrastructure config export required', 'Cipher and key length must be documented', 'KMS audit trail if using cloud-managed keys'],
+    evidence: [{ name: 'AWS RDS encryption config export.pdf', type: 'PDF', classification: 'Confidential', date: 'May 30' }],
+  },
+  {
+    id: 'r5', framework: 'ISO 27001', control: 'A.8.2',
+    title: 'Data classification policy',
+    description: 'Demonstrate that a data classification policy exists, defines at least four levels, and has been applied to all production data assets.',
+    owner: 'Security', dueLabel: 'Jun 12', dueUrgent: false, riskScore: 71, priority: 'High',
+    status: 'review', reviewerComment: 'Pending final sign-off from reviewer.',
+    guidance: ['Policy must define classification tiers', 'Asset register must reflect applied classification', 'Last reviewed within 12 months'],
+    evidence: [
+      { name: 'Data Classification Policy v3.1.pdf', type: 'Policy', classification: 'Internal', date: 'May 25' },
+      { name: 'Asset register with classification.xlsx', type: 'Export', classification: 'Internal', date: 'May 26' },
+    ],
+  },
+  {
+    id: 'r6', framework: 'SOC 2', control: 'CC7.3',
+    title: 'Incident response plan',
+    description: 'Provide the current incident response plan and evidence it has been tested within the last 12 months.',
+    owner: 'Security', dueLabel: 'Jun 14', dueUrgent: false, riskScore: 68, priority: 'High',
+    status: 'missing', reviewerComment: '',
+    guidance: ['Plan must define severity levels P1–P3', 'Roles and escalation path required', 'Test evidence (exercise report or meeting notes) required'],
+    evidence: [],
+  },
+  {
+    id: 'r7', framework: 'HIPAA', control: '164.308(a)(1)',
+    title: 'Risk analysis documentation',
+    description: 'A current, comprehensive risk analysis covering all ePHI must exist and be reviewed at least annually.',
+    owner: 'Compliance', dueLabel: 'Jun 14', dueUrgent: false, riskScore: 61, priority: 'Medium',
+    status: 'review', reviewerComment: 'Under review.',
+    guidance: ['Analysis must identify all ePHI sources', 'Threats and vulnerabilities must be documented', 'Must be signed by Privacy Officer'],
+    evidence: [{ name: 'HIPAA Risk Analysis 2025.pdf', type: 'PDF', classification: 'Restricted', date: 'May 22' }],
+  },
+  {
+    id: 'r8', framework: 'SOC 2', control: 'CC6.3',
+    title: 'Multi-factor authentication',
+    description: 'Confirm MFA is enforced on all production systems. Provide a config export or screenshot of policy enforcement.',
+    owner: 'Engineering', dueLabel: 'Jun 14', dueUrgent: false, riskScore: 55, priority: 'Medium',
+    status: 'approved', reviewerComment: 'Approved. Clean evidence, well documented.',
+    guidance: ['Must cover all production IAM roles', 'Exceptions policy required if any accounts are exempt', 'Last audit within 30 days'],
+    evidence: [{ name: 'Okta MFA enforcement policy screenshot.png', type: 'Screenshot', classification: 'Internal', date: 'May 20' }],
+  },
+  {
+    id: 'r9', framework: 'ISO 27001', control: 'A.12.1',
+    title: 'Change management procedure',
+    description: 'Provide documented change management procedures covering all production deployments.',
+    owner: 'Engineering', dueLabel: 'Jun 14', dueUrgent: false, riskScore: 50, priority: 'Medium',
+    status: 'approved', reviewerComment: 'Approved.',
+    guidance: ['CAB or equivalent approval process required', 'Deployment logs or CI/CD pipeline evidence', 'Emergency change procedure must be included'],
+    evidence: [{ name: 'Change Management SOP v2.pdf', type: 'Policy', classification: 'Internal', date: 'May 18' }],
+  },
+  {
+    id: 'r10', framework: 'SOC 2', control: 'CC8.1',
+    title: 'Penetration test report',
+    description: 'Provide the most recent third-party penetration test report, remediation tracking, and sign-off that all critical findings are resolved.',
+    owner: 'Security', dueLabel: 'Jun 14', dueUrgent: false, riskScore: 45, priority: 'Medium',
+    status: 'blocked',
+    reviewerComment: 'Blocked: Vendor NDA not yet signed. Cannot share report until legal clears the agreement.',
+    guidance: ['Test must have been conducted within 12 months', 'Report must come from approved third-party vendor', 'Critical and high findings must show resolution'],
+    evidence: [],
+  },
+  {
+    id: 'r11', framework: 'HIPAA', control: '164.312(e)(2)(ii)',
+    title: 'Transmission encryption',
+    description: 'Demonstrate that all ePHI transmitted over networks is encrypted using TLS 1.2 or higher.',
+    owner: 'Engineering', dueLabel: 'Jun 14', dueUrgent: false, riskScore: 40, priority: 'Low',
+    status: 'approved', reviewerComment: 'Approved.',
+    guidance: ['TLS version config export required for each service', 'Certificate authority must be documented', 'Expired certs are findings'],
+    evidence: [{ name: 'TLS configuration audit — all services.pdf', type: 'PDF', classification: 'Confidential', date: 'May 15' }],
+  },
+  {
+    id: 'r12', framework: 'ISO 27001', control: 'A.7.2',
+    title: 'Background check process',
+    description: 'Provide documentation of the background check process for employees and contractors.',
+    owner: 'HR', dueLabel: 'Jun 14', dueUrgent: false, riskScore: 35, priority: 'Low',
+    status: 'review', reviewerComment: 'Under review.',
+    guidance: ['Process document must define roles subject to checks', 'Must identify screening provider', 'Retention policy for records required'],
+    evidence: [{ name: 'Background Check Policy.pdf', type: 'Policy', classification: 'Confidential', date: 'May 24' }],
+  },
+];
+
+// ─── Application state ────────────────────────────────────────────────────────
+
+/**
+ * Centralised state. All mutations go through `dispatch()`.
+ * Subscribers are re-rendered after every dispatch.
+ *
+ * @type {{
+ *   requirements:  Requirement[],
+ *   selectedId:    string,
+ *   activeFilter:  string,
+ *   searchQuery:   string,
+ *   sortKey:       string,
+ *   ownerFilter:   string,
+ *   completionShown: boolean,
+ * }}
+ */
+const state = {
+  requirements:    REQUIREMENTS,
+  selectedId:      'r1',
+  activeFilter:    'all',
+  searchQuery:     '',
+  sortKey:         'risk',
+  ownerFilter:     'all',
+  completionShown: false,
+};
+
+/**
+ * Action handlers — pure functions returning partial state.
+ * @type {Record<string, (state: object, payload: any) => Partial<typeof state>>}
+ */
+const ACTION_HANDLERS = {
+  SELECT_REQUIREMENT: (s, id)           => ({ selectedId: id }),
+  SET_FILTER:         (s, filter)       => ({ activeFilter: filter }),
+  SET_SEARCH:         (s, query)        => ({ searchQuery: query }),
+  SET_SORT:           (s, key)          => ({ sortKey: key }),
+  SET_OWNER:          (s, owner)        => ({ ownerFilter: owner }),
+  MARK_COMPLETION_SHOWN: (s)            => ({ completionShown: true }),
+
+  ATTACH_EVIDENCE: (s, { requirementId, name, type, classification }) => {
+    const validTypes = new Set(['Policy', 'Procedure', 'Screenshot', 'Export / Report', 'Export', 'Attestation', 'Audit log', 'Certificate', 'Contract', 'PDF']);
+    const validClassifications = new Set(['Internal', 'Confidential', 'Restricted', 'Public']);
+    const safeName = normalizeEvidenceName(name);
+    const safeType = validTypes.has(type) ? type : 'PDF';
+    const safeClassification = validClassifications.has(classification) ? classification : 'Internal';
+    if (!safeName || !s.requirements.some((req) => req.id === requirementId)) return {};
+
+    const updated = s.requirements.map((req) => {
+      if (req.id !== requirementId) return req;
+      const duplicateExists = req.evidence.some((ev) => normalizeEvidenceName(ev.name) === safeName);
+      if (duplicateExists) return req;
+      const newEvidence = [{ name: safeName, type: safeType, classification: safeClassification, date: 'Today' }, ...req.evidence];
+      const newStatus   = ATTACHABLE_STATUSES.has(req.status) ? 'review' : req.status;
+      const newComment  = ATTACHABLE_STATUSES.has(req.status)
+        ? (req.id === 'r3'
+            ? 'Contractor completion data received. Reviewing now.'
+            : 'New evidence attached — awaiting reviewer validation.')
+        : req.reviewerComment;
+      return { ...req, evidence: newEvidence, status: newStatus, reviewerComment: newComment };
+    });
+    return { requirements: updated, selectedId: requirementId };
+  },
+
+  REMOVE_EVIDENCE: (s, { requirementId, evidenceIndex }) => {
+    const updated = s.requirements.map((req) => {
+      if (req.id !== requirementId) return req;
+      const newEvidence = req.evidence.filter((_, i) => i !== evidenceIndex);
+      const newStatus   = newEvidence.length === 0 && req.status !== 'approved' ? 'missing' : req.status;
+      return { ...req, evidence: newEvidence, status: newStatus };
+    });
+    return { requirements: updated };
+  },
+
+  UNBLOCK_REQUIREMENT: (s, id) => {
+    const updated = s.requirements.map((req) =>
+      req.id === id
+        ? { ...req, status: 'missing', reviewerComment: 'NDA signed. Evidence can now be attached.' }
+        : req
+    );
+    return { requirements: updated };
+  },
+
+  SIMULATE_REVIEWER: (s, id) => {
+    const updated = s.requirements.map((req) =>
+      req.id === id
+        ? { ...req, status: 'partial', reviewerComment: 'Reviewer requested additional clarity. Please add evidence covering active contractors specifically.' }
+        : req
+    );
+    return { requirements: updated };
+  },
+
+  SUBMIT_PACKET: (s) => {
+    const updated = s.requirements.map((req) =>
+      req.status === 'review' ? { ...req, status: 'approved' } : req
+    );
+    return { requirements: updated, completionShown: true };
+  },
+};
+
+/** @type {Array<() => void>} */
+const subscribers = [];
+
+/**
+ * Dispatch an action, apply the handler, then notify all subscribers.
+ * @param {string} type
+ * @param {any}    [payload]
+ */
+function dispatch(type, payload) {
+  const handler = ACTION_HANDLERS[type];
+  if (!handler) { console.warn(`Unknown action: ${type}`); return; }
+  const patch = handler(state, payload);
+  Object.assign(state, patch);
+  subscribers.forEach((fn) => fn());
+}
+
+/** Subscribe a render function to state changes. */
+function subscribe(fn) { subscribers.push(fn); }
+
+// ─── Derived selectors ────────────────────────────────────────────────────────
+
+/** @returns {{ total:number, approved:number, missing:number, review:number, pct:number }} */
+function selectSummaryStats() {
+  const reqs     = state.requirements;
+  const total    = reqs.length;
+  const approved = reqs.filter((r) => r.status === 'approved').length;
+  const missing  = reqs.filter((r) => BLOCKING_STATUSES.has(r.status)).length;
+  const review   = reqs.filter((r) => r.status === 'review').length;
+  const pct      = Math.round((approved / total) * 100);
+  return { total, approved, missing, review, pct };
+}
+
+/** @returns {{ soc2: number, iso: number, hipaa: number }} */
+function selectFrameworkPcts() {
+  const reqs    = state.requirements;
+  const framePct = (fw) => {
+    const subset = reqs.filter((r) => r.framework === fw);
+    return subset.length ? Math.round(subset.filter((r) => r.status === 'approved').length / subset.length * 100) : 0;
+  };
+  return { soc2: framePct('SOC 2'), iso: framePct('ISO 27001'), hipaa: framePct('HIPAA') };
+}
+
+/** @returns {Requirement[]} */
+function selectFilteredRequirements() {
+  const { requirements, activeFilter, searchQuery, ownerFilter, sortKey } = state;
+
+  let list = requirements.slice();
+
+  if (activeFilter !== 'all')  list = list.filter((r) => r.status === activeFilter);
+  if (ownerFilter  !== 'all')  list = list.filter((r) => r.owner === ownerFilter);
+
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase();
+    list = list.filter((r) =>
+      r.title.toLowerCase().includes(q)         ||
+      r.owner.toLowerCase().includes(q)         ||
+      r.control.toLowerCase().includes(q)       ||
+      r.framework.toLowerCase().includes(q)     ||
+      r.reviewerComment.toLowerCase().includes(q) ||
+      r.evidence.some((e) => e.name.toLowerCase().includes(q))
+    );
+  }
+
+  const STATUS_ORDER = { missing: 0, blocked: 1, partial: 2, review: 3, approved: 4 };
+  if (sortKey === 'risk')   list.sort((a, b) => b.riskScore - a.riskScore);
+  if (sortKey === 'due')    list.sort((a, b) => (b.dueUrgent ? 1 : 0) - (a.dueUrgent ? 1 : 0));
+  if (sortKey === 'status') list.sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9));
+
+  return list;
+}
+
+/** @returns {Requirement|undefined} */
+function selectSelectedRequirement() {
+  return state.requirements.find((r) => r.id === state.selectedId);
+}
+
+/** @returns {boolean} */
+function selectIsPacketComplete() {
+  return state.requirements.every((r) => !BLOCKING_STATUSES.has(r.status));
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+/**
+ * Required element lookup. Throws immediately if an expected node is missing.
+ * This keeps failures loud in stricter production-style code paths.
+ * @param {string} id
+ * @returns {HTMLElement}
+ */
+function el(id) {
+  const node = document.getElementById(id);
+  if (!node) throw new Error(`Missing required element: #${id}`);
+  return node;
+}
+
+/** Optional element lookup for nodes that are conditionally rendered. */
+function elMaybe(id) { return document.getElementById(id); }
+
+/** @param {string} name @returns {string} */
+function fileIconForType(name = '') {
+  const n = name.toLowerCase();
+  if (n.endsWith('.png') || n.endsWith('.jpg') || n.endsWith('.jpeg')) return '🖼️';
+  if (n.endsWith('.csv') || n.endsWith('.xlsx'))                        return '📊';
+  if (n.endsWith('.docx'))                                              return '📋';
+  return '📄';
+}
+
+/** @param {string} filename @returns {string} */
+function inferTypeFromFilename(filename = '') {
+  const n = filename.toLowerCase();
+  if (n.endsWith('.csv'))                                return 'Export';
+  if (n.match(/\.(png|jpg|jpeg)$/))                     return 'Screenshot';
+  if (n.endsWith('.docx'))                              return 'Policy';
+  return 'PDF';
+}
+
+/** @param {unknown} rawName @returns {string} */
+function normalizeEvidenceName(rawName) {
+  return String(rawName ?? '')
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+}
+
+
+/** @param {string} filename @returns {string} */
+function fileExtension(filename = '') {
+  const parts = filename.toLowerCase().split('.');
+  return parts.length > 1 ? parts.pop() : '';
+}
+
+/**
+ * Client-side validation mirrors what a production upload endpoint would also enforce.
+ * It improves prototype realism, but must not be treated as a security boundary.
+ * Production must still enforce authz, MIME/signature checks, malware scanning,
+ * storage controls, and auditable event logging on the server side.
+ * @param {File} file
+ * @returns {{valid: true} | {valid: false, reason: string}}
+ */
+function validateEvidenceFile(file) {
+  if (!file) return { valid: false, reason: 'No file selected' };
+  if (file.size > MAX_EVIDENCE_FILE_BYTES) return { valid: false, reason: 'File exceeds the 25 MB limit' };
+
+  const normalizedName = normalizeEvidenceName(file.name);
+  if (!normalizedName) return { valid: false, reason: 'Filename is invalid after normalization' };
+
+  const ext = fileExtension(normalizedName);
+  if (!ALLOWED_EVIDENCE_EXTENSIONS.has(ext)) {
+    return { valid: false, reason: 'Unsupported file type. Use PDF, PNG, JPG, DOCX, CSV, or XLSX' };
+  }
+
+  const mime = String(file.type || '').toLowerCase();
+  if (mime && !ALLOWED_EVIDENCE_MIME_TYPES.has(mime)) {
+    return { valid: false, reason: 'File MIME type is not allowed for this prototype' };
+  }
+
+  return { valid: true };
+}
+
+/** @param {string} requirementId @param {string} rawName @returns {boolean} */
+function hasDuplicateEvidenceName(requirementId, rawName) {
+  const req = state.requirements.find((r) => r.id === requirementId);
+  if (!req) return false;
+  const candidate = normalizeEvidenceName(rawName);
+  if (!candidate) return false;
+  return req.evidence.some((ev) => normalizeEvidenceName(ev.name) === candidate);
+}
+
+/** @param {File} file @param {string} requirementId */
+function attachEvidenceFile(file, requirementId) {
+  const validation = validateEvidenceFile(file);
+  if (!validation.valid) {
+    showToast(validation.reason, '⚠');
+    return false;
+  }
+
+  const normalizedName = normalizeEvidenceName(file.name);
+  if (hasDuplicateEvidenceName(requirementId, normalizedName)) {
+    showToast('That file is already attached to this requirement', '⚠');
+    return false;
+  }
+
+  dispatch('ATTACH_EVIDENCE', {
+    requirementId,
+    name: normalizedName,
+    type: inferTypeFromFilename(file.name),
+    classification: 'Internal',
+  });
+  showToast('Evidence attached', '✓');
+  return true;
+}
+
+/**
+ * Minimal focus trap for the drawer/modal. Keeps keyboard users inside the active dialog
+ * and restores focus to the opener on close.
+ */
+function createDialogController({ dialogEl, backdropEl, initialFocusEl, onClose }) {
+  let previousFocus = null;
+
+  const focusable = () => Array.from(dialogEl.querySelectorAll(FOCUSABLE_SELECTOR))
+    .filter((node) => node.offsetParent !== null || node === document.activeElement);
+
+  const trapFocus = (event) => {
+    if (event.key !== 'Tab') return;
+    const nodes = focusable();
+    if (nodes.length === 0) {
+      event.preventDefault();
+      dialogEl.focus();
+      return;
+    }
+
+    const first = nodes[0];
+    const last = nodes[nodes.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  const show = () => {
+    previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogEl.classList.add('open');
+    dialogEl.setAttribute('aria-hidden', 'false');
+    backdropEl.classList.add('open');
+    backdropEl.setAttribute('aria-hidden', 'false');
+    document.addEventListener('keydown', trapFocus);
+    requestAnimationFrame(() => (initialFocusEl?.() || dialogEl).focus());
+  };
+
+  const hide = () => {
+    dialogEl.classList.remove('open');
+    dialogEl.setAttribute('aria-hidden', 'true');
+    backdropEl.classList.remove('open');
+    backdropEl.setAttribute('aria-hidden', 'true');
+    document.removeEventListener('keydown', trapFocus);
+    if (onClose) onClose();
+    if (previousFocus && document.contains(previousFocus)) previousFocus.focus();
+  };
+
+  return { show, hide };
+}
+
+let toastTimer;
+/**
+ * Show a transient toast notification.
+ * @param {string} message
+ * @param {string} [icon='✓']
+ */
+function showToast(message, icon = '✓') {
+  el('js-toast-msg').textContent  = message;
+  el('js-toast-icon').textContent = icon;
+  const toastEl = el('js-toast');
+  toastEl.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('visible'), 2600);
+}
+
+/** @param {HTMLElement} dz */
+function bindDropZone(dz, onFile) {
+  dz.addEventListener('dragover',  (e) => { e.preventDefault(); dz.classList.add('drag-active'); });
+  dz.addEventListener('dragleave', ()  => dz.classList.remove('drag-active'));
+  dz.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dz.classList.remove('drag-active');
+    const file = e.dataTransfer.files[0];
+    if (file) onFile(file);
+  });
+}
+
+// ─── Confetti ─────────────────────────────────────────────────────────────────
+
+const confetti = (() => {
+  const canvas = el('confetti-canvas');
+  const ctx    = canvas.getContext('2d');
+  const COLORS = ['#22c55e', '#2953e8', '#f59e0b', '#a78bfa', '#34d399', '#fb923c', '#60a5fa'];
+  let particles = [];
+  let rafId     = null;
+
+  const resize = () => { canvas.width = innerWidth; canvas.height = innerHeight; };
+  addEventListener('resize', resize);
+  resize();
+
+  const tick = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    let alive = false;
+
+    for (const p of particles) {
+      p.x   += p.vx;
+      p.y   += p.vy;
+      p.vy  += 0.07;
+      p.ang += p.spin;
+      p.life -= 0.008;
+      if (p.life <= 0 || p.y > canvas.height + 20) continue;
+
+      alive = true;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, p.life * 2);
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.ang);
+      ctx.fillStyle = p.color;
+      if (p.isRect) {
+        ctx.fillRect(-p.r, -p.r * 0.5, p.r * 2, p.r);
+      } else {
+        ctx.beginPath();
+        ctx.arc(0, 0, p.r * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    if (alive) rafId = requestAnimationFrame(tick);
+    else ctx.clearRect(0, 0, canvas.width, canvas.height);
+  };
+
+  return {
+    launch() {
+      particles = Array.from({ length: 140 }, () => ({
+        x:      Math.random() * canvas.width,
+        y:      -10 - Math.random() * 180,
+        r:      4 + Math.random() * 5,
+        color:  COLORS[Math.floor(Math.random() * COLORS.length)],
+        vx:     (Math.random() - 0.5) * 3,
+        vy:     2 + Math.random() * 3.5,
+        ang:    Math.random() * Math.PI * 2,
+        spin:   (Math.random() - 0.5) * 0.2,
+        isRect: Math.random() > 0.5,
+        life:   1,
+      }));
+      if (rafId) cancelAnimationFrame(rafId);
+      tick();
+    },
+  };
+})();
+
+// ─── Drawer controller ────────────────────────────────────────────────────────
+
+const drawer = (() => createDialogController({
+  dialogEl: el('js-drawer'),
+  backdropEl: el('js-drawer-backdrop'),
+  initialFocusEl: () => el('js-dr-name'),
+  onClose: () => {
+    el('js-dr-name').value = '';
+    el('js-dr-notes').value = '';
+    el('js-dr-name-error').classList.remove('visible');
+    el('js-drawer-file').value = '';
+  },
+}))();
+
+/** Populate the drawer's requirement dropdown and pre-select the given id.
+ *  Uses DOM API instead of innerHTML to avoid XSS via requirement field values.
+ */
+function populateDrawerRequirements(selectedId) {
+  const select = el('js-dr-req');
+  select.textContent = ''; // clear without innerHTML
+  state.requirements.forEach((r) => {
+    const option   = document.createElement('option');
+    option.value   = r.id;
+    option.textContent = `${r.framework} ${r.control} — ${r.title}`;
+    select.appendChild(option);
+  });
+  select.value = selectedId;
+}
+
+// ─── Modal controller ─────────────────────────────────────────────────────────
+
+const modal = (() => {
+  const controller = createDialogController({
+    dialogEl: document.querySelector('#js-modal-backdrop .modal'),
+    backdropEl: el('js-modal-backdrop'),
+    initialFocusEl: () => el('js-modal-dismiss'),
+  });
+
+  return {
+    show() {
+      const stats = selectSummaryStats();
+      const files = state.requirements.reduce((sum, r) => sum + r.evidence.length, 0);
+      el('js-modal-reqs').textContent = stats.total;
+      el('js-modal-files').textContent = files;
+      controller.show();
+      confetti.launch();
+    },
+    hide: controller.hide,
+  };
+})();
+
+// ─── Export ───────────────────────────────────────────────────────────────────
+
+function exportPacket() {
+  const blocking = state.requirements.filter((r) => BLOCKING_STATUSES.has(r.status)).length;
+  if (blocking > 0) {
+    showToast(`${blocking} unresolved item${blocking > 1 ? 's' : ''} — cannot export yet`, '⚠');
+    return;
+  }
+
+  const lines = [
+    'FUTUREFEED COMPLIANCE EVIDENCE PACKET',
+    'Northstar Builders LLC — SOC 2 Type II Readiness',
+    `Exported: ${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`,
+    '='.repeat(58),
+    '',
+    ...state.requirements.flatMap((r, i) => [
+      `${i + 1}. [${r.status.toUpperCase()}] ${r.framework} ${r.control} — ${r.title}`,
+      `   Owner: ${r.owner}  |  Due: ${r.dueLabel}  |  Risk: ${r.riskScore}/100`,
+      ...r.evidence.map((e) => `   ✓ ${e.name} (${e.type}, ${e.classification})`),
+      ...(r.evidence.length === 0 ? ['   — No evidence attached'] : []),
+      '',
+    ]),
+    '='.repeat(58),
+    `Total: ${state.requirements.length} requirements, ${state.requirements.reduce((s, r) => s + r.evidence.length, 0)} files`,
+  ];
+
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+  const a    = Object.assign(document.createElement('a'), {
+    href:     URL.createObjectURL(blob),
+    download: 'FutureFeed_Evidence_Packet.txt',
+  });
+  a.click();
+  URL.revokeObjectURL(a.href);
+  showToast('Packet downloaded', '📥');
+}
+
+// ─── Render functions ─────────────────────────────────────────────────────────
+// Each render function is responsible for exactly one region of the UI.
+// They read from state/selectors only — no direct mutations.
+
+function renderKPIs() {
+  const { total, approved, missing, review, pct } = selectSummaryStats();
+  const filled = (pct / 100) * RING_CIRCUMFERENCE;
+
+  el('js-ring-pct').textContent    = `${pct}%`;
+  el('js-ring-fg').style.strokeDasharray = `${filled} ${RING_CIRCUMFERENCE - filled}`;
+  el('js-hero-title').textContent  = `${approved} of ${total} requirements met`;
+  el('js-risk-level').textContent  = pct >= 85 ? 'Low' : pct >= 65 ? 'Medium' : 'High';
+  el('js-kpi-approved').textContent = approved;
+  el('js-kpi-missing').textContent  = missing;
+  el('js-kpi-review').textContent   = review;
+  el('js-sb-badge').textContent     = missing;
+  el('js-sb-copy').textContent      = `${missing} requirement${missing !== 1 ? 's' : ''} still need${missing === 1 ? 's' : ''} evidence.`;
+}
+
+function renderFrameworkBars() {
+  const { soc2, iso, hipaa } = selectFrameworkPcts();
+
+  el('js-fw-soc2-pct').textContent = `${soc2}%`;
+  el('js-fw-iso-pct').textContent  = `${iso}%`;
+  el('js-fw-hip-pct').textContent  = `${hipaa}%`;
+
+  // Width update in rAF so the CSS transition fires after initial paint.
+  requestAnimationFrame(() => {
+    el('js-fw-soc2-bar').style.width = `${soc2}%`;
+    el('js-fw-iso-bar').style.width  = `${iso}%`;
+    el('js-fw-hip-bar').style.width  = `${hipaa}%`;
+  });
+}
+
+function renderBanner() {
+  const bannerEl   = el('js-banner');
+  const isComplete = selectIsPacketComplete();
+
+  if (isComplete) {
+    bannerEl.innerHTML = `
+      <div class="banner banner-success">
+        <div class="banner-icon" aria-hidden="true">✅</div>
+        <div class="banner-body">
+          <div class="banner-title">All requirements have evidence — packet is ready</div>
+          <div class="banner-detail">Every requirement is in review or approved. You can now submit to your reviewer.</div>
+        </div>
+        <button class="btn btn-primary btn-sm" id="js-banner-view" >View summary</button>
+      </div>`;
+    elMaybe('js-banner-view')?.addEventListener('click', modal.show);
+  } else {
+    const blocking = state.requirements.filter((r) => BLOCKING_STATUSES.has(r.status)).length;
+    bannerEl.innerHTML = `
+      <div class="banner banner-warn">
+        <div class="banner-icon" aria-hidden="true">⚡</div>
+        <div class="banner-body">
+          <div class="banner-title">${blocking} requirement${blocking !== 1 ? 's' : ''} blocking readiness</div>
+          <div class="banner-detail">Focus on high-risk items first. Drop evidence files directly onto requirement rows to attach instantly.</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="js-banner-blockers" >Show blockers</button>
+      </div>`;
+    elMaybe('js-banner-blockers')?.addEventListener('click', () => {
+      dispatch('SET_FILTER', 'missing');
+      showToast('Showing requirements that need evidence', '🔍');
+    });
+  }
+}
+
+function renderFilterChips() {
+  el('js-chip-count').textContent = `(${state.requirements.length})`;
+  el('js-filter-chips').querySelectorAll('.filter-chip').forEach((chip) => {
+    const isActive = chip.dataset.filter === state.activeFilter;
+    chip.setAttribute('aria-pressed', String(isActive));
+  });
+}
+
+function renderRequirementsList() {
+  const listEl = el('js-req-list');
+  const list   = selectFilteredRequirements();
+
+  if (list.length === 0) {
+    listEl.innerHTML = '<div class="req-list-empty"><strong>No requirements match</strong>Try adjusting filters or search.</div>';
+    return;
+  }
+
+  listEl.innerHTML = list.map((req) => {
+    const cfg       = STATUS_CONFIG[req.status];
+    const metaFiles = req.evidence.length
+      ? `<span class="req-meta-sep"></span><span class="req-meta-tag">${req.evidence.length} file${req.evidence.length > 1 ? 's' : ''}</span>`
+      : '';
+    return `
+      <button
+        class="req-row${req.id === state.selectedId ? ' selected' : ''}"
+        role="option"
+        aria-selected="${req.id === state.selectedId}"
+        data-req-id="${sanitize(req.id)}"
+      >
+        <div class="status-icon ${cfg.iconClass}" aria-hidden="true">${cfg.icon}</div>
+        <div>
+          <div class="req-title">${sanitize(req.title)}</div>
+          <div class="req-meta">
+            <span class="req-meta-tag">${sanitize(req.framework)} ${sanitize(req.control)}</span>
+            <span class="req-meta-sep"></span>
+            <span class="req-meta-tag">${sanitize(req.owner)}</span>
+            ${metaFiles}
+          </div>
+        </div>
+        <div class="req-right">
+          <span class="status-pill ${cfg.pillClass}">${cfg.label}</span>
+          <div class="req-due${req.dueUrgent ? ' req-due-urgent' : ''}">Due ${sanitize(req.dueLabel)}</div>
+        </div>
+      </button>`;
+  }).join('');
+
+  // Bind row interactions after render.
+  listEl.querySelectorAll('.req-row').forEach((row) => {
+    const reqId = row.dataset.reqId;
+
+    row.addEventListener('click', () => dispatch('SELECT_REQUIREMENT', reqId));
+
+    // Each row is a first-class drop target — the fastest attachment path.
+    row.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      row.classList.add('drop-target');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      row.classList.remove('drop-target');
+      const file = e.dataTransfer.files[0];
+      if (!file) return;
+      dispatch('SELECT_REQUIREMENT', reqId);
+      attachEvidenceFile(file, reqId);
+    });
+  });
+}
+
+function renderDetailPane() {
+  const paneEl = el('js-detail-pane');
+  const req    = selectSelectedRequirement();
+
+  if (!req) { paneEl.innerHTML = ''; return; }
+
+  const cfg            = STATUS_CONFIG[req.status];
+  const isHighRiskOpen = BLOCKING_STATUSES.has(req.status) && req.riskScore >= 80;
+
+  // Build inner HTML sections as separate strings for readability.
+  const blockedSection = req.status === 'blocked' ? `
+    <div class="detail-section">
+      <div class="blocked-card">
+        <div class="blocked-card-header">
+          <div class="blocked-icon" aria-hidden="true">🔒</div>
+          <div class="blocked-title">Requirement is blocked</div>
+        </div>
+        <div class="blocked-reason">${sanitize(req.reviewerComment)}</div>
+        <button class="btn btn-unblock" data-action="unblock" data-req-id="${sanitize(req.id)}">
+          Mark NDA signed — unblock requirement
+        </button>
+      </div>
+    </div>` : '';
+
+  const reviewerNoteSection = req.reviewerComment && req.status !== 'blocked' ? `
+    <div class="detail-section">
+      <div class="reviewer-note">
+        <div class="reviewer-note-header">
+          <div class="reviewer-avatar" aria-hidden="true">R</div>
+          <div class="reviewer-label">Reviewer note</div>
+        </div>
+        <div class="reviewer-body">${sanitize(req.reviewerComment)}</div>
+      </div>
+    </div>` : '';
+
+  const startHerePrompt = isHighRiskOpen ? `
+    <div class="start-here-prompt">
+      <strong>Start here</strong>
+      This is one of your highest-risk open requirements. Drop a file below or click "Attach evidence" to unblock it.
+    </div>` : '';
+
+  const evidenceItems = req.evidence.length
+    ? req.evidence.map((ev, i) => `
+        <div class="evidence-item">
+          <div class="evidence-icon" aria-hidden="true">${fileIconForType(ev.name)}</div>
+          <div>
+            <div class="evidence-name">${sanitize(ev.name)}</div>
+            <div class="evidence-meta">${sanitize(ev.type)} · ${sanitize(ev.classification)} · ${sanitize(ev.date)}</div>
+          </div>
+          <button class="evidence-remove" data-action="remove-evidence" data-req-id="${sanitize(req.id)}" data-evidence-index="${i}" aria-label="Remove ${sanitize(ev.name)}">
+            Remove
+          </button>
+        </div>`).join('')
+    : `
+      <div class="evidence-item evidence-empty">
+        <div class="evidence-icon" aria-hidden="true">📭</div>
+        <div>
+          <div class="evidence-name">No evidence attached</div>
+          <div class="evidence-meta">Drop a file anywhere on this panel, or onto the row in the list</div>
+        </div>
+      </div>`;
+
+  paneEl.innerHTML = `
+    <div class="detail-head">
+      <div class="detail-eyebrow">${sanitize(req.framework)} · ${sanitize(req.control)}</div>
+      <div class="detail-title">${sanitize(req.title)}</div>
+      <div class="detail-actions">
+        <span class="status-pill ${cfg.pillClass}">${cfg.label}</span>
+        <button class="btn btn-primary btn-sm" data-action="open-drawer" data-req-id="${sanitize(req.id)}">Attach evidence</button>
+      </div>
+    </div>
+    <div class="detail-scroll">
+      <div class="detail-section">
+        <p class="detail-description">${sanitize(req.description)}</p>
+      </div>
+      <div class="detail-section">
+        <div class="detail-stats">
+          <div class="detail-stat"><div class="detail-stat-label">Owner</div><div class="detail-stat-value">${sanitize(req.owner)}</div></div>
+          <div class="detail-stat"><div class="detail-stat-label">Due</div><div class="detail-stat-value">${sanitize(req.dueLabel)}</div></div>
+          <div class="detail-stat"><div class="detail-stat-label">Risk score</div><div class="detail-stat-value">${req.riskScore}/100</div></div>
+          <div class="detail-stat"><div class="detail-stat-label">Priority</div><div class="detail-stat-value">${sanitize(req.priority)}</div></div>
+        </div>
+      </div>
+      ${blockedSection}
+      ${reviewerNoteSection}
+      <div class="detail-section">
+        <div class="detail-section-header">
+          <div class="detail-section-title">Reviewer guidance</div>
+          <span class="detail-count">${req.guidance.length} checks</span>
+        </div>
+        <div class="checklist">
+          ${req.guidance.map((g) => `
+            <div class="checklist-item">
+              <div class="checklist-check" aria-hidden="true">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <path d="M2 5L4.2 7.5L8 3" stroke="#0f7a4b" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <span>${sanitize(g)}</span>
+            </div>`).join('')}
+        </div>
+      </div>
+      <div class="detail-section">
+        <div class="detail-section-header">
+          <div class="detail-section-title">Evidence attached</div>
+          <span class="detail-count">${req.evidence.length} file${req.evidence.length !== 1 ? 's' : ''}</span>
+        </div>
+        ${startHerePrompt}
+        <div class="evidence-list">${evidenceItems}</div>
+      </div>
+      <div class="detail-section">
+        <div class="drop-zone" id="js-detail-dz">
+          <input id="js-detail-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.docx,.csv,.xlsx" aria-label="Upload evidence file"/>
+          <label for="js-detail-file">
+            <div class="drop-zone-icon" aria-hidden="true">⬆</div>
+            <div class="drop-zone-title">Drop a file here or click to browse</div>
+            <div class="drop-zone-hint">PDF, PNG, DOCX, CSV — up to 25 MB</div>
+          </label>
+        </div>
+      </div>
+    </div>`;
+
+  // Bind detail pane actions via event delegation on the pane element.
+  paneEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+
+    const action = btn.dataset.action;
+    const reqId  = btn.dataset.reqId;
+
+    if (action === 'open-drawer') {
+      populateDrawerRequirements(reqId);
+      drawer.show();
+    } else if (action === 'unblock') {
+      dispatch('UNBLOCK_REQUIREMENT', reqId);
+      showToast('Requirement unblocked — attach evidence to proceed', '🔓');
+    } else if (action === 'remove-evidence') {
+      dispatch('REMOVE_EVIDENCE', { requirementId: reqId, evidenceIndex: Number(btn.dataset.evidenceIndex) });
+      showToast('Evidence removed', '✕');
+    }
+  }, { once: true }); // once: true prevents listener accumulation across renders
+
+  // Detail drop zone
+  const detailDz   = el('js-detail-dz');
+  const detailFile = el('js-detail-file');
+  if (detailDz && detailFile) {
+    bindDropZone(detailDz, (file) => attachEvidenceFile(file, req.id));
+    detailFile.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      attachEvidenceFile(file, req.id);
+      detailFile.value = '';
+    });
+  }
+
+  // The pane itself is also a drop target (catches drops outside the explicit zone).
+  paneEl.addEventListener('dragover', (e) => e.preventDefault(), { once: true });
+  paneEl.addEventListener('drop', (e) => {
+    if (e.target.closest('#js-detail-dz')) return; // already handled
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    attachEvidenceFile(file, req.id);
+  }, { once: true });
+}
+
+/** Check completion state and show modal on first completion. */
+function renderCompletionCheck() {
+  const isComplete = selectIsPacketComplete();
+  if (isComplete && !state.completionShown) {
+    dispatch('MARK_COMPLETION_SHOWN');
+    setTimeout(modal.show, 380);
+  }
+}
+
+// ─── Owner select initialisation ─────────────────────────────────────────────
+
+/** Populate the owner filter dropdown using DOM API to avoid innerHTML XSS. */
+function initOwnerSelect() {
+  const owners = [...new Set(state.requirements.map((r) => r.owner))].sort();
+  const select = el('js-owner-select');
+  select.textContent = '';
+  const all = document.createElement('option');
+  all.value = 'all';
+  all.textContent = 'All owners';
+  select.appendChild(all);
+  owners.forEach((owner) => {
+    const opt = document.createElement('option');
+    opt.value = owner;
+    opt.textContent = owner;
+    select.appendChild(opt);
+  });
+}
+
+// ─── Master render ────────────────────────────────────────────────────────────
+
+function render() {
+  renderKPIs();
+  renderFrameworkBars();
+  renderBanner();
+  renderFilterChips();
+  renderRequirementsList();
+  renderDetailPane();
+  renderCompletionCheck();
+}
+
+// ─── Event bindings ───────────────────────────────────────────────────────────
+
+// Toolbar
+el('js-search').addEventListener('input',      (e) => dispatch('SET_SEARCH', e.target.value));
+el('js-owner-select').addEventListener('change',(e) => dispatch('SET_OWNER', e.target.value));
+el('js-sort-select').addEventListener('change', (e) => dispatch('SET_SORT',  e.target.value));
+
+// Filter chips
+el('js-filter-chips').addEventListener('click', (e) => {
+  const chip = e.target.closest('.filter-chip');
+  if (chip) dispatch('SET_FILTER', chip.dataset.filter);
+});
+
+// Topbar actions
+el('js-add-evidence').addEventListener('click', () => {
+  populateDrawerRequirements(state.selectedId);
+  drawer.show();
+});
+el('js-sb-attach').addEventListener('click', () => {
+  populateDrawerRequirements(state.selectedId);
+  drawer.show();
+});
+el('js-simulate').addEventListener('click', () => {
+  const req = selectSelectedRequirement();
+  if (!req) return;
+  dispatch('SIMULATE_REVIEWER', req.id);
+  showToast('Reviewer note added', '💬');
+});
+el('js-export').addEventListener('click', exportPacket);
+
+// Drawer controls
+el('js-drawer-close').addEventListener('click',   drawer.hide);
+el('js-drawer-cancel').addEventListener('click',  drawer.hide);
+el('js-drawer-backdrop').addEventListener('click', drawer.hide);
+
+const drawerDz   = el('js-drawer-dz');
+const drawerFile = el('js-drawer-file');
+bindDropZone(drawerDz, (file) => {
+  const validation = validateEvidenceFile(file);
+  if (!validation.valid) {
+    showToast(validation.reason, '⚠');
+    return;
+  }
+  const nameInput = el('js-dr-name');
+  if (!nameInput.value) nameInput.value = file.name;
+});
+drawerFile.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const validation = validateEvidenceFile(file);
+  if (!validation.valid) {
+    showToast(validation.reason, '⚠');
+    drawerFile.value = '';
+    return;
+  }
+  if (!el('js-dr-name').value) el('js-dr-name').value = file.name;
+});
+
+el('js-drawer-submit').addEventListener('click', () => {
+  const requirementId = el('js-dr-req').value;
+  const name = normalizeEvidenceName(el('js-dr-name').value);
+  const errEl = el('js-dr-name-error');
+
+  if (name.length < 4 || name.length > 160) {
+    errEl.textContent = 'Please enter a title between 4 and 160 characters.';
+    errEl.classList.add('visible');
+    el('js-dr-name').focus();
+    return;
+  }
+  errEl.classList.remove('visible');
+
+  if (hasDuplicateEvidenceName(requirementId, name)) {
+    errEl.textContent = 'That evidence name already exists for this requirement.';
+    errEl.classList.add('visible');
+    el('js-dr-name').focus();
+    return;
+  }
+
+  dispatch('ATTACH_EVIDENCE', {
+    requirementId,
+    name,
+    type: el('js-dr-type').value,
+    classification: el('js-dr-class').value,
+  });
+  drawer.hide();
+  showToast('Evidence attached', '✓');
+});
+
+// Modal controls
+el('js-modal-dismiss').addEventListener('click', modal.hide);
+el('js-modal-submit').addEventListener('click',  () => {
+  modal.hide();
+  dispatch('SUBMIT_PACKET');
+  showToast('Packet submitted to reviewer', '📬');
+});
+
+// Global keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (el('js-drawer').classList.contains('open'))         drawer.hide();
+  else if (el('js-modal-backdrop').classList.contains('open')) modal.hide();
+});
+
+// Prevent accidental browser navigation when files are dropped outside intended targets.
+document.addEventListener('dragover', (e) => {
+  const target = e.target instanceof Element ? e.target : null;
+  const isAllowed = Boolean(target?.closest('.drop-zone, .req-row, #js-detail-pane'));
+  if (!isAllowed) e.preventDefault();
+}, { capture: true });
+
+document.addEventListener('drop', (e) => {
+  const target = e.target instanceof Element ? e.target : null;
+  const isAllowed = Boolean(target?.closest('.drop-zone, .req-row, #js-detail-pane'));
+  if (!isAllowed) e.preventDefault();
+}, { capture: true });
+
+// ─── Lightweight Self-Tests (opt-in) ────────────────────────────────────────
+// Run with: ?selftest=1
+function runSelfTests() {
+  const results = [];
+
+  const deepCloneRequirements = (reqs) => reqs.map((req) => ({
+    ...req,
+    evidence: req.evidence.map((ev) => ({ ...ev })),
+    guidance: req.guidance.slice(),
+  }));
+
+  const makeStateFixture = () => ({
+    requirements: deepCloneRequirements(state.requirements),
+    selectedId: state.selectedId,
+    activeFilter: state.activeFilter,
+    searchQuery: state.searchQuery,
+    sortKey: state.sortKey,
+    ownerFilter: state.ownerFilter,
+    completionShown: state.completionShown,
+  });
+
+  const makeStateSnapshot = () => ({
+    requirements: deepCloneRequirements(state.requirements),
+    selectedId: state.selectedId,
+    activeFilter: state.activeFilter,
+    searchQuery: state.searchQuery,
+    sortKey: state.sortKey,
+    ownerFilter: state.ownerFilter,
+    completionShown: state.completionShown,
+  });
+
+  const withStateSnapshot = (fn) => {
+    const snapshot = makeStateSnapshot();
+    try {
+      return fn();
+    } finally {
+      Object.assign(state, {
+        ...snapshot,
+        requirements: deepCloneRequirements(snapshot.requirements),
+      });
+    }
+  };
+
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+
+  const test = (name, fn) => {
+    try {
+      fn();
+      results.push({ name, ok: true });
+    } catch (err) {
+      results.push({ name, ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  test('sanitize escapes HTML control chars', () => {
+    const raw = '<img src=x onerror=alert(1)>"\'';
+    const escaped = sanitize(raw);
+    assert(!escaped.includes('<') && !escaped.includes('>'), 'Expected angle brackets to be escaped');
+    assert(escaped.includes('&lt;') && escaped.includes('&gt;'), 'Expected escaped angle bracket entities');
+  });
+
+  test('normalizeEvidenceName strips controls and trims', () => {
+    const normalized = normalizeEvidenceName('  Test\u0000\u0008   File.pdf  ');
+    assert(normalized === 'Test File.pdf', `Unexpected normalized value: ${normalized}`);
+  });
+
+  test('validateEvidenceFile rejects oversized files', () => {
+    const fileLike = { name: 'large.pdf', size: MAX_EVIDENCE_FILE_BYTES + 1, type: 'application/pdf' };
+    const res = validateEvidenceFile(fileLike);
+    assert(!res.valid, 'Expected oversized file to be rejected');
+  });
+
+  test('validateEvidenceFile rejects unsupported extension', () => {
+    const fileLike = { name: 'payload.exe', size: 1024, type: 'application/octet-stream' };
+    const res = validateEvidenceFile(fileLike);
+    assert(!res.valid, 'Expected unsupported extension to be rejected');
+  });
+
+  test('validateEvidenceFile rejects disallowed mime when provided', () => {
+    const fileLike = { name: 'doc.pdf', size: 1024, type: 'application/x-msdownload' };
+    const res = validateEvidenceFile(fileLike);
+    assert(!res.valid, 'Expected disallowed MIME to be rejected');
+  });
+
+  test('duplicate detection uses normalized filename matching', () => {
+    const dup = hasDuplicateEvidenceName('r3', '  Employee   training completion report.csv  ');
+    assert(dup === true, 'Expected duplicate to be detected for r3');
+  });
+
+  test('ATTACH_EVIDENCE transitions attachable requirement to review', () => {
+    const fixture = makeStateFixture();
+    const before = fixture.requirements.find((r) => r.id === 'r1');
+    const patch = ACTION_HANDLERS.ATTACH_EVIDENCE(fixture, {
+      requirementId: 'r1',
+      name: '  New   Access Policy.pdf  ',
+      type: 'Policy',
+      classification: 'Confidential',
+    });
+    const updated = patch.requirements.find((r) => r.id === 'r1');
+
+    assert(before.status === 'missing', 'Fixture precondition failed for r1 status');
+    assert(updated.status === 'review', 'Expected missing requirement to move to review');
+    assert(updated.evidence[0].name === 'New Access Policy.pdf', 'Expected normalized evidence name to be prepended');
+    assert(updated.evidence[0].classification === 'Confidential', 'Expected valid classification to be preserved');
+    assert(patch.selectedId === 'r1', 'Expected selectedId to follow attached requirement');
+  });
+
+  test('ATTACH_EVIDENCE defaults invalid type and classification safely', () => {
+    const fixture = makeStateFixture();
+    const patch = ACTION_HANDLERS.ATTACH_EVIDENCE(fixture, {
+      requirementId: 'r2',
+      name: 'Vendor register export.pdf',
+      type: 'Executable',
+      classification: 'TopSecret',
+    });
+    const updated = patch.requirements.find((r) => r.id === 'r2');
+
+    assert(updated.evidence[0].type === 'PDF', 'Expected unknown type to fall back to PDF');
+    assert(updated.evidence[0].classification === 'Internal', 'Expected unknown classification to fall back to Internal');
+  });
+
+  test('ATTACH_EVIDENCE prevents duplicate attachments in reducer path', () => {
+    const fixture = makeStateFixture();
+    const before = fixture.requirements.find((r) => r.id === 'r3');
+    const patch = ACTION_HANDLERS.ATTACH_EVIDENCE(fixture, {
+      requirementId: 'r3',
+      name: ' Employee  training completion report.csv ',
+      type: 'Export',
+      classification: 'Internal',
+    });
+    const updated = patch.requirements.find((r) => r.id === 'r3');
+
+    assert(updated.evidence.length === before.evidence.length, 'Expected duplicate evidence to be ignored');
+  });
+
+  test('ATTACH_EVIDENCE rejects unknown requirement ids', () => {
+    const fixture = makeStateFixture();
+    const patch = ACTION_HANDLERS.ATTACH_EVIDENCE(fixture, {
+      requirementId: 'does-not-exist',
+      name: 'Any.pdf',
+      type: 'PDF',
+      classification: 'Internal',
+    });
+    assert(Object.keys(patch).length === 0, 'Expected empty patch for unknown requirement id');
+  });
+
+  test('REMOVE_EVIDENCE sets missing when final evidence removed from non-approved requirement', () => {
+    const fixture = makeStateFixture();
+    const patch = ACTION_HANDLERS.REMOVE_EVIDENCE(fixture, { requirementId: 'r3', evidenceIndex: 0 });
+    const updated = patch.requirements.find((r) => r.id === 'r3');
+
+    assert(updated.evidence.length === 0, 'Expected evidence to be removed');
+    assert(updated.status === 'missing', 'Expected non-approved requirement with no evidence to become missing');
+  });
+
+  test('REMOVE_EVIDENCE keeps approved status intact', () => {
+    const fixture = makeStateFixture();
+    const approvedReq = fixture.requirements.find((r) => r.status === 'approved' && r.evidence.length > 0);
+    assert(Boolean(approvedReq), 'Expected at least one approved requirement with evidence');
+    const patch = ACTION_HANDLERS.REMOVE_EVIDENCE(fixture, {
+      requirementId: approvedReq.id,
+      evidenceIndex: 0,
+    });
+    const updated = patch.requirements.find((r) => r.id === approvedReq.id);
+
+    assert(updated.status === 'approved', 'Expected approved status to remain approved after evidence removal');
+  });
+
+  test('SUBMIT_PACKET promotes review requirements and marks completion shown', () => {
+    const fixture = makeStateFixture();
+    const beforeReviewCount = fixture.requirements.filter((r) => r.status === 'review').length;
+    assert(beforeReviewCount > 0, 'Expected fixture to contain review requirements');
+    const patch = ACTION_HANDLERS.SUBMIT_PACKET(fixture);
+    const afterReviewCount = patch.requirements.filter((r) => r.status === 'review').length;
+    const afterApprovedCount = patch.requirements.filter((r) => r.status === 'approved').length;
+    const beforeApprovedCount = fixture.requirements.filter((r) => r.status === 'approved').length;
+
+    assert(afterReviewCount === 0, 'Expected all review requirements to become approved');
+    assert(afterApprovedCount === beforeApprovedCount + beforeReviewCount, 'Expected approved count to increase by former review count');
+    assert(patch.completionShown === true, 'Expected completionShown to be true after submit');
+  });
+
+  test('selector pipeline applies status, owner, and search filters together', () => withStateSnapshot(() => {
+    const fixture = makeStateFixture();
+    const target = fixture.requirements.find((r) => r.status === 'review');
+    assert(Boolean(target), 'Expected fixture to contain a review requirement');
+
+    Object.assign(state, {
+      requirements: fixture.requirements,
+      activeFilter: 'review',
+      ownerFilter: target.owner,
+      searchQuery: target.control,
+      sortKey: 'risk',
+    });
+
+    const filtered = selectFilteredRequirements();
+    assert(filtered.length >= 1, 'Expected at least one requirement to match combined filters');
+    assert(filtered.every((r) => r.status === 'review'), 'Expected status filter to apply');
+    assert(filtered.every((r) => r.owner === target.owner), 'Expected owner filter to apply');
+    assert(filtered.every((r) => (`${r.control} ${r.title}`.toLowerCase()).includes(target.control.toLowerCase())), 'Expected search filter to apply');
+  }));
+
+  test('status sort orders requirements from missing to approved', () => withStateSnapshot(() => {
+    Object.assign(state, {
+      requirements: deepCloneRequirements(state.requirements),
+      activeFilter: 'all',
+      ownerFilter: 'all',
+      searchQuery: '',
+      sortKey: 'status',
+    });
+
+    const STATUS_ORDER = { missing: 0, blocked: 1, partial: 2, review: 3, approved: 4 };
+    const sorted = selectFilteredRequirements();
+    for (let i = 1; i < sorted.length; i += 1) {
+      const prev = STATUS_ORDER[sorted[i - 1].status];
+      const next = STATUS_ORDER[sorted[i].status];
+      assert(prev <= next, 'Expected status-sorted list to be non-decreasing by status rank');
+    }
+  }));
+
+  test('dispatch unknown action leaves state unchanged and warns', () => withStateSnapshot(() => {
+    const before = makeStateSnapshot();
+    const beforeSerialized = JSON.stringify(before);
+    const originalWarn = console.warn;
+    let warnCalled = false;
+
+    console.warn = (...args) => {
+      if (String(args[0] || '').includes('Unknown action')) warnCalled = true;
+    };
+
+    try {
+      dispatch('NO_SUCH_ACTION', { x: 1 });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    const afterSerialized = JSON.stringify(makeStateSnapshot());
+    assert(warnCalled, 'Expected unknown action warning to be emitted');
+    assert(beforeSerialized === afterSerialized, 'Expected unknown action to avoid state mutations');
+  }));
+
+  const failed = results.filter((r) => !r.ok);
+  const passed = results.length - failed.length;
+
+  console.group('FutureFeed self-tests');
+  results.forEach((r) => {
+    if (r.ok) console.log(`PASS: ${r.name}`);
+    else console.error(`FAIL: ${r.name} -> ${r.error}`);
+  });
+  console.log(`Summary: ${passed}/${results.length} passed`);
+  console.groupEnd();
+
+  if (failed.length > 0) {
+    throw new Error(`Self-tests failed: ${failed.length} of ${results.length}`);
+  }
+}
+
+// ─── Bootstrap ────────────────────────────────────────────────────────────────
+
+subscribe(render);
+initOwnerSelect();
+render();
+if (new URLSearchParams(location.search).has('selftest')) {
+  runSelfTests();
+}
+// Second rAF tick so ring CSS transition fires against the painted initial state.
+requestAnimationFrame(() => requestAnimationFrame(renderFrameworkBars));
+</script>
+</body>
+</html>
